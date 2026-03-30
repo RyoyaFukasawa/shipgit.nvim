@@ -42,7 +42,7 @@ Existing tools each have trade-offs:
 
 ```lua
 {
-  "ryoyafukasawa/shipgit.nvim",
+  "RyoyaFukasawa/shipgit.nvim",
   config = function()
     require("shipgit").setup()
   end,
