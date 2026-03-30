@@ -245,7 +245,7 @@ end
 --- @param hash string
 --- @return { path: string, status: string }[]
 function M.commit_files(hash)
-  local out, code = git("diff-tree --no-commit-id -r --name-status " .. vim.fn.shellescape(hash))
+  local out, code = git("diff-tree --root --no-commit-id -r --name-status " .. vim.fn.shellescape(hash))
   if code ~= 0 or not out or out == "" then
     return {}
   end
