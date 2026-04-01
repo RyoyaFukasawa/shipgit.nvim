@@ -5,6 +5,8 @@ A fast, floating git client for Neovim with side-by-side diff powered by native 
 ![Neovim](https://img.shields.io/badge/Neovim-0.10%2B-green?logo=neovim)
 ![Lua](https://img.shields.io/badge/Lua-blue?logo=lua)
 
+![shipgit screenshot](assets/screenshot.png)
+
 ## Why shipgit?
 
 Existing tools each have trade-offs:
@@ -22,12 +24,13 @@ Existing tools each have trade-offs:
 - **Stage/unstage** at file, directory, or hunk level
 - **Edit diffs directly** — modify the right (new) panel and save with `:w`
 - **Commit, push, pull** (async, non-blocking)
-- **Branch management** — checkout, create, delete, merge, rebase, with ahead/behind indicators
+- **Branch management** — checkout, create, delete, merge (with confirmation), rebase, cherry-pick, with ahead/behind indicators
 - **Remote branches** — switch between local/remote with `]`/`[`
-- **Branch tree** — colored `git log --graph` visualization
-- **Stash** — push, pop, apply, drop
-- **Commit log** — browse history with side-by-side diff per commit
-- **Conflict resolution** — dedicated conflict section with merge/rebase abort
+- **Branch tree** — colored `git log --graph` visualization with tag create/delete
+- **Stash** — push, pop, apply, drop with file tree and side-by-side diff preview
+- **Commit log** — browse history with file tree, side-by-side diff, cherry-pick, infinite scroll
+- **Conflict resolution** — dedicated conflict section with merge/rebase/cherry-pick abort
+- **Auto-refresh** — updates on focus return
 - **Project switching** — recent project history with `<C-p>`
 - **Fully customizable** highlights and keymaps
 - **Zero dependencies**
@@ -126,8 +129,9 @@ Open shipgit with `<leader>gg` (or `:Shipgit`).
 | Key | Action |
 |-----|--------|
 | `Space` | Checkout branch |
-| `M` | Merge selected branch |
+| `M` | Merge selected branch (with confirmation dialog) |
 | `r` | Rebase onto selected branch |
+| `c` | Cherry-pick (opens branch log to pick commits) |
 | `P` | Push |
 | `p` | Pull |
 | `f` | Fetch |
@@ -140,20 +144,34 @@ Open shipgit with `<leader>gg` (or `:Shipgit`).
 
 | Key | Action |
 |-----|--------|
+| `j` / `k` | Navigate stashes and files |
+| `h` / `l` | Collapse/expand directory tree |
+| `Enter` | View file diff (side-by-side) |
 | `Space` | Pop stash |
 | `a` | Apply stash (keep) |
 | `d` | Drop stash |
 | `n` | New stash |
-| `q` | Close |
+| `<C-h>` / `<C-l>` | Move between panels |
+| `q` | Close (returns to main view) |
 
 #### Commit Log (`g`)
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Navigate commits |
+| `j` / `k` | Navigate commits and files |
+| `h` / `l` | Collapse/expand directory tree |
 | `Enter` | View file diff (side-by-side) |
+| `c` | Cherry-pick selected commit |
 | `<C-h>` / `<C-l>` | Move between panels |
 | `q` | Close (returns to main view) |
+
+#### Branch Tree (`t`)
+
+| Key | Action |
+|-----|--------|
+| `t` | Create tag on selected commit |
+| `d` | Delete tag |
+| `q` | Close |
 
 #### Project Switcher (`<C-p>`)
 
