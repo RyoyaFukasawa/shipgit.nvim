@@ -32,12 +32,16 @@ Existing tools each have trade-offs:
 - **Conflict resolution** — dedicated conflict section with merge/rebase/cherry-pick abort
 - **Auto-refresh** — updates on focus return
 - **Project switching** — recent project history with `<C-p>`
+- **File icons** — [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) support (optional)
+- **Unpushed branch detection** — `⚠ unpushed` indicator for branches without upstream
+- **Smart push** — auto `--set-upstream` for new branches
 - **Fully customizable** highlights and keymaps
-- **Zero dependencies**
+- **Zero required dependencies** (nvim-web-devicons optional)
 
 ## Requirements
 
 - Neovim >= 0.10
+- [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) (optional, for file icons)
 
 ## Installation
 
@@ -46,6 +50,7 @@ Existing tools each have trade-offs:
 ```lua
 {
   "RyoyaFukasawa/shipgit.nvim",
+  dependencies = { "nvim-tree/nvim-web-devicons" }, -- optional
   config = function()
     require("shipgit").setup()
   end,
@@ -78,13 +83,13 @@ Open shipgit with `<leader>gg` (or `:Shipgit`).
 ```
 ╭── shipgit - main ─────────────────────────────────╮
 │ Unstaged (3)     │ old (HEAD)        │ new (work) │
-│  ▾ src/          │ local x = 1      │ local x = 1│
-│    M index.ts    │ print("hello")   │ print("hi")│
-│    M utils.ts    │                   │ return 42  │
-│  ? new.txt       │                   │            │
+│  ▾  src/        │ local x = 1      │ local x = 1│
+│    M  index.ts  │ print("hello")   │ print("hi")│
+│    M  utils.ts  │                   │ return 42  │
+│  ?  new.txt     │                   │            │
 │                  │                   │            │
 │ Staged (1)       │                   │            │
-│  M README.md     │                   │            │
+│  M  README.md   │                   │            │
 ╰──────────────────┴───────────────────┴────────────╯
 ```
 
@@ -95,14 +100,14 @@ Open shipgit with `<leader>gg` (or `:Shipgit`).
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate files |
-| `Space` | Stage/unstage file or directory |
+| `Space` | Stage/unstage file, directory, or hunk |
 | `a` | Stage/unstage all |
-| `h` | Collapse directory (or parent if on file) |
-| `l` | Toggle directory open/close |
+| `h` | Collapse directory/file (or parent if on child) |
+| `l` | Toggle directory open/close, expand file hunks |
 | `c` | Commit |
 | `P` | Push (async) |
 | `p` | Pull (async) |
-| `d` | Discard changes / abort merge or rebase |
+| `d` | Discard changes / abort merge, rebase, or cherry-pick |
 | `o` | Open file in Neovim (closes shipgit) |
 | `b` | Branch manager |
 | `t` | Branch tree (graph) |
@@ -118,7 +123,7 @@ Open shipgit with `<leader>gg` (or `:Shipgit`).
 
 | Key | Action |
 |-----|--------|
-| `Space` | Stage/unstage hunk at cursor |
+| `Space` | Stage/unstage current file |
 | `:w` | Save edits to working tree (right panel, unstaged files) |
 | `<C-h>` / `<C-l>` | Move between panels |
 | `Tab` | Focus file list |
