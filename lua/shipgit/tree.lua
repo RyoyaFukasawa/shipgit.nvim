@@ -63,6 +63,109 @@ function M.open()
 
   kmap("q", function() M.close() end)
   kmap("<Esc>", function() M.close() end)
+
+  -- t: タグ作成
+  kmap("t", function()
+    local hash = M._get_cursor_hash()
+    if not hash then
+      vim.notify("shipgit: コミットが選択されていません", vim.log.levels.WARN)
+      return
+    end
+    vim.ui.input({ prompt = "Tag name: " }, function(name)
+      if not name or name == "" then return end
+      local out, code = git.create_tag(name, hash)
+      if code ~= 0 then
+        vim.notify("shipgit: tag 作成失敗\n" .. (out or ""), vim.log.levels.ERROR)
+        return
+      end
+      vim.notify("shipgit: tag " .. name .. " を作成しました", vim.log.levels.INFO)
+      M._reload()
+      vim.ui.select({ "Yes", "No" }, {
+        prompt = "tag " .. name .. " をリモートに push しますか？",
+      }, function(choice)
+        if choice == "Yes" then
+          vim.notify("shipgit: pushing tag " .. name .. "...", vim.log.levels.INFO)
+          git.push_tag_async(name, function(push_out, push_code)
+            if push_code ~= 0 then
+              vim.notify("shipgit: tag push 失敗\n" .. (push_out or ""), vim.log.levels.ERROR)
+            else
+              vim.notify("shipgit: tag " .. name .. " を push しました", vim.log.levels.INFO)
+            end
+          end)
+        end
+      end)
+    end)
+  end)
+
+  -- d: タグ削除
+  kmap("d", function()
+    local line = M._get_cursor_line()
+    if not line then return end
+    -- 行から tag: xxx を抽出
+    local tags = {}
+    for tag in line:gmatch("tag:%s*([%w%-_%.%/]+)") do
+      tags[#tags + 1] = tag
+    end
+    if #tags == 0 then
+      vim.notify("shipgit: この行にはタグがありません", vim.log.levels.WARN)
+      return
+    end
+    local target = tags[1]
+    if #tags > 1 then
+      vim.ui.select(tags, { prompt = "削除するタグを選択:" }, function(choice)
+        if choice then
+          M._delete_tag(choice)
+        end
+      end)
+    else
+      M._delete_tag(target)
+    end
+  end)
+end
+
+function M._delete_tag(tag_name)
+  vim.ui.select({ "Yes", "No" }, {
+    prompt = "Delete tag " .. tag_name .. "?",
+  }, function(choice)
+    if choice == "Yes" then
+      local out, code = git.delete_tag(tag_name)
+      if code ~= 0 then
+        vim.notify("shipgit: tag 削除失敗\n" .. (out or ""), vim.log.levels.ERROR)
+      else
+        vim.notify("shipgit: tag " .. tag_name .. " を削除しました", vim.log.levels.INFO)
+        M._reload()
+      end
+    end
+  end)
+end
+
+function M._get_cursor_line()
+  if not M._win or not vim.api.nvim_win_is_valid(M._win) then return nil end
+  local cursor = vim.api.nvim_win_get_cursor(M._win)
+  local lines = vim.api.nvim_buf_get_lines(M._buf, cursor[1] - 1, cursor[1], false)
+  return lines[1]
+end
+
+function M._get_cursor_hash()
+  local line = M._get_cursor_line()
+  if not line then return nil end
+  -- 行内の7文字以上の16進数をハッシュとして取得
+  return line:match("(%x%x%x%x%x%x%x+)")
+end
+
+function M._reload()
+  if not M._win or not vim.api.nvim_win_is_valid(M._win) then return end
+  local cursor = vim.api.nvim_win_get_cursor(M._win)
+  local graph_lines = git.graph()
+  while #graph_lines > 0 and graph_lines[#graph_lines] == "" do
+    table.remove(graph_lines)
+  end
+  vim.bo[M._buf].modifiable = true
+  vim.api.nvim_buf_set_lines(M._buf, 0, -1, false, graph_lines)
+  vim.bo[M._buf].modifiable = false
+  M._apply_highlights(graph_lines)
+  local row = math.min(cursor[1], #graph_lines)
+  pcall(vim.api.nvim_win_set_cursor, M._win, { row, 0 })
 end
 
 local function graph_color_count()

@@ -38,7 +38,8 @@ local function git_async(args, callback)
   end
   vim.system(cmd, { text = true }, function(obj)
     vim.schedule(function()
-      callback(obj.stdout or obj.stderr or "", obj.code)
+      local out = (obj.stdout or "") .. (obj.stderr or "")
+      callback(out, obj.code)
     end)
   end)
 end
@@ -165,6 +166,23 @@ function M.rebase_abort()
   return git("rebase --abort")
 end
 
+function M.is_cherry_picking()
+  local _, code = git("rev-parse --verify CHERRY_PICK_HEAD")
+  return code == 0
+end
+
+function M.cherry_pick_abort()
+  return git("cherry-pick --abort")
+end
+
+function M.show_cherry_pick_msg()
+  local out, code = git("log -1 --format=%s CHERRY_PICK_HEAD")
+  if code ~= 0 or not out or out == "" then
+    return nil
+  end
+  return vim.trim(out)
+end
+
 function M.rebase_continue()
   return git("rebase --continue")
 end
@@ -215,12 +233,57 @@ function M.stash_drop(index)
   return git("stash drop stash@{" .. (index or 0) .. "}")
 end
 
+--- stash の変更ファイル一覧を返す
+--- @param index number
+--- @return { status: string, path: string }[]
+function M.stash_files(index)
+  local out, code = git("stash show --name-status stash@{" .. (index or 0) .. "}")
+  if code ~= 0 or not out or out == "" then
+    return {}
+  end
+  local files = {}
+  for line in out:gmatch("[^\n]+") do
+    local status, path = line:match("^(%a)%s+(.+)$")
+    if status and path then
+      table.insert(files, { status = status, path = path })
+    end
+  end
+  return files
+end
+
+--- stash 内のファイル内容を返す
+--- @param index number
+--- @param filepath string
+--- @return string|nil
+function M.stash_show_file(index, filepath)
+  local out, code = git("show stash@{" .. (index or 0) .. "}:" .. vim.fn.shellescape(filepath))
+  if code ~= 0 then
+    return nil
+  end
+  return out
+end
+
+--- stash の親コミットのファイル内容を返す
+--- @param index number
+--- @param filepath string
+--- @return string|nil
+function M.stash_show_parent_file(index, filepath)
+  local out, code = git("show stash@{" .. (index or 0) .. "}^:" .. vim.fn.shellescape(filepath))
+  if code ~= 0 then
+    return nil
+  end
+  return out
+end
+
 --- コミットログを返す
 --- @param count number|nil 取得件数（デフォルト50）
 --- @return { hash: string, short_hash: string, subject: string, author: string, date: string }[]
-function M.log(count)
+function M.log(count, skip, branch)
   count = count or 50
-  local out, code = git("log --format='%H|%h|%s|%an|%cr' -" .. count)
+  skip = skip or 0
+  local skip_arg = skip > 0 and (" --skip=" .. skip) or ""
+  local branch_arg = branch and (" " .. branch) or ""
+  local out, code = git("log --format='%H|%h|%s|%an|%cr' -" .. count .. skip_arg .. branch_arg)
   if code ~= 0 or not out or out == "" then
     return {}
   end
@@ -320,7 +383,14 @@ function M.push()
 end
 
 function M.push_async(callback)
-  git_async("push", callback)
+  -- upstream 未設定の場合は --set-upstream origin を付ける
+  local _, code = git("rev-parse --abbrev-ref --symbolic-full-name @{u}")
+  if code ~= 0 then
+    local branch = M.branch()
+    git_async("push --set-upstream origin " .. branch, callback)
+  else
+    git_async("push", callback)
+  end
 end
 
 function M.pull()
@@ -434,7 +504,7 @@ function M.merge(branch_name)
 end
 
 function M.merge_async(branch_name, callback)
-  git_async("merge " .. vim.fn.shellescape(branch_name), callback)
+  git_async("merge " .. branch_name, callback)
 end
 
 function M.rebase(branch_name)
@@ -442,7 +512,11 @@ function M.rebase(branch_name)
 end
 
 function M.rebase_async(branch_name, callback)
-  git_async("rebase " .. vim.fn.shellescape(branch_name), callback)
+  git_async("rebase " .. branch_name, callback)
+end
+
+function M.cherry_pick_async(hash, callback)
+  git_async("cherry-pick " .. hash, callback)
 end
 
 --- ファイルのdiffをハンク単位で取得
@@ -533,6 +607,21 @@ function M.unstage_hunk(hunk)
   return out, code
 end
 
+function M.create_tag(tag_name, hash)
+  if hash then
+    return git("tag " .. vim.fn.shellescape(tag_name) .. " " .. hash)
+  end
+  return git("tag " .. vim.fn.shellescape(tag_name))
+end
+
+function M.delete_tag(tag_name)
+  return git("tag -d " .. vim.fn.shellescape(tag_name))
+end
+
+function M.push_tag_async(tag_name, callback)
+  git_async("push origin " .. tag_name, callback)
+end
+
 function M.graph()
   local out, code = git("log --graph --oneline --all --decorate --color=never -100")
   if code ~= 0 then
@@ -550,6 +639,24 @@ function M.discard(filepath)
     return "", 0
   end
   return git("checkout -- " .. vim.fn.shellescape(filepath))
+end
+
+--- ディレクトリ内の変更を全て破棄
+--- @param dirpath string ディレクトリパス
+--- @param files table unstaged ファイル一覧（state.files.unstaged）
+function M.discard_dir(dirpath, files)
+  local prefix = dirpath .. "/"
+  -- untracked ファイルを削除
+  for _, f in ipairs(files) do
+    if f.path == dirpath or f.path:sub(1, #prefix) == prefix then
+      if f.status == "?" then
+        local fullpath = M.cwd .. "/" .. f.path
+        os.remove(fullpath)
+      end
+    end
+  end
+  -- tracked ファイルの変更を復元
+  return git("checkout -- " .. vim.fn.shellescape(dirpath))
 end
 
 return M

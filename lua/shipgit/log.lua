@@ -1,37 +1,52 @@
 local git = require("shipgit.git")
 local config = require("shipgit.config")
+local filelist = require("shipgit.filelist")
 
 local M = {}
 
 M._wins = {}    -- { list, diff_left, diff_right }
 M._bufs = {}    -- { list, diff_left, diff_right }
 M._commits = {}
-M._selected_files = {}
-M._file_cursor = 1
-M._mode = "detail" -- "detail" | "diff"
 M._current_commit = nil
 M._on_close = nil
+M._list_map = {} -- 各行が何を表すか: { type="commit"|"file"|"dir", ... }
+M._collapsed = {} -- 折りたたみ状態 "commit_idx:dir_path" -> true
+M._load_count = 30 -- 1回あたりの読み込み件数
+M._no_more = false -- これ以上コミットがないか
+M._branch = nil -- 表示対象ブランチ（nil=現在のブランチ）
 
 function M.is_open()
   return M._wins.list ~= nil and vim.api.nvim_win_is_valid(M._wins.list)
 end
 
-function M.open(on_close)
+function M.open(on_close, branch)
   if M.is_open() then
     return
   end
 
   M._on_close = on_close
-  M._commits = git.log(100)
+  M._collapsed = {}
+  M._no_more = false
+  M._branch = branch
+  M._commits = git.log(M._load_count, 0, branch)
   if #M._commits == 0 then
     vim.notify("shipgit: コミット履歴がありません", vim.log.levels.WARN)
     return
   end
 
-  M._mode = "detail"
+  -- 各コミットのファイルツリーを事前取得し、初期状態は全て閉じる
+  for i, c in ipairs(M._commits) do
+    c._files = git.commit_files(c.hash)
+    c._tree = filelist.build_tree(c._files)
+    for _, item in ipairs(c._tree) do
+      if item.is_dir then
+        M._collapsed[i .. ":" .. item.path] = true
+      end
+    end
+  end
+
   M._create_layout()
   M._render_list()
-  M._show_detail(1)
   M._setup_keymaps()
 end
 
@@ -54,7 +69,6 @@ function M._create_layout()
   local right_w = total_w - list_w - 1
   local half_right = math.floor(right_w / 2)
 
-  -- コミット一覧
   M._bufs.list = create_buf()
   M._wins.list = vim.api.nvim_open_win(M._bufs.list, true, {
     relative = "editor",
@@ -65,13 +79,12 @@ function M._create_layout()
     style = "minimal",
     border = "rounded",
     zindex = 60,
-    title = " Commit Log ",
+    title = " Commit Log" .. (M._branch and (" (" .. M._branch .. ")") or "") .. " ",
     title_pos = "center",
   })
   vim.wo[M._wins.list].cursorline = true
   vim.wo[M._wins.list].wrap = false
 
-  -- Diff左 (old)
   M._bufs.diff_left = create_buf()
   M._wins.diff_left = vim.api.nvim_open_win(M._bufs.diff_left, false, {
     relative = "editor",
@@ -94,7 +107,6 @@ function M._create_layout()
     "NormalFloat:Normal,DiffAdd:ShipgitDiffAdd,DiffChange:ShipgitDiffChange,DiffDelete:ShipgitDiffDelete,DiffText:ShipgitDiffText",
     { win = M._wins.diff_left })
 
-  -- Diff右 (new)
   M._bufs.diff_right = create_buf()
   M._wins.diff_right = vim.api.nvim_open_win(M._bufs.diff_right, false, {
     relative = "editor",
@@ -118,97 +130,99 @@ function M._create_layout()
     { win = M._wins.diff_right })
 end
 
-function M._render_list()
-  local lines = {}
-  for _, c in ipairs(M._commits) do
-    table.insert(lines, " " .. c.short_hash .. " " .. c.subject)
-  end
+--- ツリーアイテムを list_map に追加（折りたたみ対応）
+local function render_tree_items(tree, lines, map, commit_idx, base_indent, collapsed)
+  local collapsed_dirs = {}
 
-  vim.bo[M._bufs.list].modifiable = true
-  vim.api.nvim_buf_set_lines(M._bufs.list, 0, -1, false, lines)
-  vim.bo[M._bufs.list].modifiable = false
+  for _, item in ipairs(tree) do
+    local is_hidden = false
+    if item.parent_dir then
+      for cdir, _ in pairs(collapsed_dirs) do
+        if item.parent_dir == cdir or item.parent_dir:sub(1, #cdir + 1) == cdir .. "/" then
+          is_hidden = true
+          break
+        end
+      end
+    end
 
-  local ns = vim.api.nvim_create_namespace("shipgit_log_list")
-  vim.api.nvim_buf_clear_namespace(M._bufs.list, ns, 0, -1)
-  for i, c in ipairs(M._commits) do
-    vim.api.nvim_buf_add_highlight(M._bufs.list, ns, "ShipgitGraphHash", i - 1, 1, 1 + #c.short_hash)
-    vim.api.nvim_buf_add_highlight(M._bufs.list, ns, "ShipgitGraphMessage", i - 1, 1 + #c.short_hash + 1, -1)
+    if not is_hidden then
+      if item.is_dir then
+        local key = commit_idx .. ":" .. item.path
+        local is_collapsed = collapsed[key]
+        local icon = is_collapsed and "▸" or "▾"
+        lines[#lines + 1] = base_indent .. item.indent .. icon .. " " .. item.name .. "/"
+        map[#map + 1] = { type = "dir", commit_idx = commit_idx, dir_path = item.path }
+
+        if is_collapsed then
+          collapsed_dirs[item.path] = true
+        else
+          collapsed_dirs[item.path] = nil
+        end
+      else
+        local icon = filelist.status_icon(item.file.status)
+        lines[#lines + 1] = base_indent .. item.indent .. icon .. " " .. item.name
+        map[#map + 1] = { type = "file", filepath = item.file.path, status = item.file.status, commit_idx = commit_idx, parent_dir = item.parent_dir }
+      end
+    end
   end
 end
 
-function M._show_detail(idx)
-  if idx < 1 or idx > #M._commits then
-    return
+--- 左パネルを描画
+function M._render_list()
+  local lines = {}
+  local map = {}
+  local ns = vim.api.nvim_create_namespace("shipgit_log_list")
+
+  for i, c in ipairs(M._commits) do
+    lines[#lines + 1] = " " .. c.short_hash .. " " .. c.subject
+    map[#map + 1] = { type = "commit", idx = i }
+
+    render_tree_items(c._tree, lines, map, i, "    ", M._collapsed)
   end
 
-  -- diff モード解除
-  M._diffoff()
-
-  local commit = M._commits[idx]
-  M._current_commit = commit
-  local files = git.commit_files(commit.hash)
-  M._selected_files = files
-  M._file_cursor = 1
-  M._mode = "detail"
-
-  -- 左パネルにコミット情報とファイル一覧を表示
-  local lines = {
-    " " .. commit.short_hash .. " " .. commit.subject,
-    " " .. commit.author .. " · " .. commit.date,
-    "",
-  }
-
-  if #files == 0 then
-    table.insert(lines, " (no files changed)")
-  else
-    table.insert(lines, " Files (" .. #files .. "):")
-    for _, f in ipairs(files) do
-      local icon = M._status_icon(f.status)
-      table.insert(lines, "  " .. icon .. " " .. f.path)
-    end
-  end
-
-  M._set_buf(M._bufs.diff_left, lines)
+  M._list_map = map
+  M._set_buf(M._bufs.list, lines)
 
   -- ハイライト
-  local ns = vim.api.nvim_create_namespace("shipgit_log_detail")
-  vim.api.nvim_buf_clear_namespace(M._bufs.diff_left, ns, 0, -1)
-  vim.api.nvim_buf_add_highlight(M._bufs.diff_left, ns, "ShipgitTitle", 0, 0, -1)
-  vim.api.nvim_buf_add_highlight(M._bufs.diff_left, ns, "ShipgitHelpDesc", 1, 0, -1)
-  local file_start = 4
-  for i, f in ipairs(files) do
-    local hl
-    if f.status == "A" then hl = "ShipgitStagedFile"
-    elseif f.status == "D" then hl = "ShipgitStatusDel"
-    elseif f.status == "M" then hl = "ShipgitUnstagedFile"
-    else hl = "ShipgitGraphMessage"
+  vim.api.nvim_buf_clear_namespace(M._bufs.list, ns, 0, -1)
+  for i, entry in ipairs(map) do
+    if entry.type == "commit" then
+      local c = M._commits[entry.idx]
+      vim.api.nvim_buf_add_highlight(M._bufs.list, ns, "ShipgitGraphHash", i - 1, 1, 1 + #c.short_hash)
+      vim.api.nvim_buf_add_highlight(M._bufs.list, ns, "ShipgitGraphMessage", i - 1, 1 + #c.short_hash + 1, -1)
+    elseif entry.type == "dir" then
+      vim.api.nvim_buf_add_highlight(M._bufs.list, ns, "ShipgitDirName", i - 1, 0, -1)
+    elseif entry.type == "file" then
+      local hl
+      if entry.status == "A" then hl = "ShipgitStagedFile"
+      elseif entry.status == "D" then hl = "ShipgitStatusDel"
+      elseif entry.status == "M" then hl = "ShipgitUnstagedFile"
+      else hl = "ShipgitGraphMessage"
+      end
+      vim.api.nvim_buf_add_highlight(M._bufs.list, ns, hl, i - 1, 0, -1)
     end
-    vim.api.nvim_buf_add_highlight(M._bufs.diff_left, ns, hl, file_start + i - 1, 0, -1)
   end
 
-  -- 右パネルはヒント
+  -- 右パネルにヒント表示
+  M._diffoff()
   local hint = {
     "",
-    "  j/k: コミット移動",
-    "  Enter: ファイルのdiffを表示",
+    "  j/k: 移動  h/l: 折りたたみ",
+    "  Enter: diff を表示",
     "  C-h/C-l: パネル移動",
     "  q: 閉じる",
   }
-  M._set_buf(M._bufs.diff_right, hint)
+  M._set_buf(M._bufs.diff_left, hint)
+  M._set_buf(M._bufs.diff_right, {})
   local ns2 = vim.api.nvim_create_namespace("shipgit_log_hint")
-  vim.api.nvim_buf_clear_namespace(M._bufs.diff_right, ns2, 0, -1)
+  vim.api.nvim_buf_clear_namespace(M._bufs.diff_left, ns2, 0, -1)
   for i = 1, #hint do
-    vim.api.nvim_buf_add_highlight(M._bufs.diff_right, ns2, "ShipgitHelpDesc", i - 1, 0, -1)
+    vim.api.nvim_buf_add_highlight(M._bufs.diff_left, ns2, "ShipgitHelpDesc", i - 1, 0, -1)
   end
-
-  -- タイトル更新
   M._update_titles("Old", "New")
 end
 
 function M._show_file_diff(commit, filepath)
-  M._mode = "diff"
-
-  -- diff モード解除
   M._diffoff()
 
   local old_content = git.show_commit_file(commit.hash .. "~1", filepath) or ""
@@ -222,28 +236,23 @@ function M._show_file_diff(commit, filepath)
   M._set_buf(M._bufs.diff_left, old_lines)
   M._set_buf(M._bufs.diff_right, new_lines)
 
-  -- filetype
   local ft = vim.filetype.match({ filename = filepath }) or ""
   vim.bo[M._bufs.diff_left].filetype = ft
   vim.bo[M._bufs.diff_right].filetype = ft
 
-  -- diffthis
   vim.api.nvim_set_current_win(M._wins.diff_left)
   vim.cmd("diffthis")
   vim.api.nvim_set_current_win(M._wins.diff_right)
   vim.cmd("diffthis")
 
-  -- スクロール同期
   vim.wo[M._wins.diff_left].scrollbind = true
   vim.wo[M._wins.diff_right].scrollbind = true
   vim.wo[M._wins.diff_left].cursorbind = true
   vim.wo[M._wins.diff_right].cursorbind = true
 
-  -- タイトル更新
   local short = vim.fn.fnamemodify(filepath, ":t")
   M._update_titles(short .. " (old)", short .. " (new)")
 
-  -- コミット一覧にフォーカスを戻す
   vim.api.nvim_set_current_win(M._wins.list)
 end
 
@@ -281,11 +290,6 @@ function M._set_buf(buf, lines)
   vim.bo[buf].modifiable = false
 end
 
-function M._status_icon(status)
-  local icons = { M = "M", A = "+", D = "-", R = "R", C = "C" }
-  return icons[status] or status
-end
-
 function M.close()
   M._diffoff()
   for _, win in pairs(M._wins) do
@@ -296,12 +300,81 @@ function M.close()
   M._wins = {}
   M._bufs = {}
   M._commits = {}
-  M._selected_files = {}
   M._current_commit = nil
+  M._list_map = {}
+  M._collapsed = {}
+  M._no_more = false
+  M._branch = nil
   local cb = M._on_close
   M._on_close = nil
   if cb then
     vim.schedule(cb)
+  end
+end
+
+--- 追加コミットを読み込む
+local function load_more()
+  if M._no_more then return false end
+  local new_commits = git.log(M._load_count, #M._commits, M._branch)
+  if #new_commits == 0 then
+    M._no_more = true
+    return false
+  end
+  local base = #M._commits
+  for i, c in ipairs(new_commits) do
+    c._files = git.commit_files(c.hash)
+    c._tree = filelist.build_tree(c._files)
+    for _, item in ipairs(c._tree) do
+      if item.is_dir then
+        M._collapsed[(base + i) .. ":" .. item.path] = true
+      end
+    end
+    M._commits[#M._commits + 1] = c
+  end
+  if #new_commits < M._load_count then
+    M._no_more = true
+  end
+  return true
+end
+
+--- カーソル位置を保持してリスト再描画
+local function rerender_keeping_cursor()
+  local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
+  M._render_list()
+  local total = #M._list_map
+  local row = math.min(cursor[1], total)
+  if row >= 1 then
+    pcall(vim.api.nvim_win_set_cursor, M._wins.list, { row, 0 })
+  end
+end
+
+--- カーソル行の entry に応じて動作
+local function handle_cursor_move()
+  if not M._wins.list or not vim.api.nvim_win_is_valid(M._wins.list) then return end
+  local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
+  local entry = M._list_map[cursor[1]]
+  if not entry then return end
+
+  if entry.type == "file" then
+    M._current_commit = M._commits[entry.commit_idx]
+    M._show_file_diff(M._current_commit, entry.filepath)
+  elseif entry.type == "commit" then
+    M._current_commit = M._commits[entry.idx]
+    M._diffoff()
+    local hint = {
+      "",
+      "  " .. M._current_commit.short_hash .. " " .. M._current_commit.subject,
+      "  " .. M._current_commit.author .. " · " .. M._current_commit.date,
+      "",
+      "  j/k: 移動  h/l: 折りたたみ",
+      "  Enter: diff を表示",
+      "  c: cherry-pick",
+      "  C-h/C-l: パネル移動",
+      "  q: 閉じる",
+    }
+    M._set_buf(M._bufs.diff_left, hint)
+    M._set_buf(M._bufs.diff_right, {})
+    M._update_titles("Old", "New")
   end
 end
 
@@ -312,7 +385,6 @@ function M._setup_keymaps()
 
   local all_bufs = { M._bufs.list, M._bufs.diff_left, M._bufs.diff_right }
 
-  -- 全パネル共通: q, Esc, C-h, C-l
   for _, buf in ipairs(all_bufs) do
     kmap(buf, "q", function() M.close() end)
     kmap(buf, "<Esc>", function() M.close() end)
@@ -336,45 +408,109 @@ function M._setup_keymaps()
     end)
   end
 
-  -- コミット一覧: j/k/Enter
   local list_buf = M._bufs.list
 
+  -- j/k: カーソル移動
   kmap(list_buf, "j", function()
     local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
-    local idx = math.min(cursor[1] + 1, #M._commits)
-    pcall(vim.api.nvim_win_set_cursor, M._wins.list, { idx, 0 })
-    M._show_detail(idx)
+    local total = #M._list_map
+    local next_idx = cursor[1] + 1
+    if next_idx > total then
+      -- 末尾に到達したら追加読み込み
+      if load_more() then
+        M._render_list()
+        pcall(vim.api.nvim_win_set_cursor, M._wins.list, { next_idx, 0 })
+        handle_cursor_move()
+      end
+      return
+    end
+    pcall(vim.api.nvim_win_set_cursor, M._wins.list, { next_idx, 0 })
+    handle_cursor_move()
+    -- 末尾付近で先読み
+    if next_idx >= total - 5 then
+      if load_more() then
+        rerender_keeping_cursor()
+      end
+    end
   end)
 
   kmap(list_buf, "k", function()
     local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
-    local idx = math.max(cursor[1] - 1, 1)
-    pcall(vim.api.nvim_win_set_cursor, M._wins.list, { idx, 0 })
-    M._show_detail(idx)
+    local prev_idx = cursor[1] - 1
+    if prev_idx < 1 then return end
+    pcall(vim.api.nvim_win_set_cursor, M._wins.list, { prev_idx, 0 })
+    handle_cursor_move()
   end)
 
-  kmap(list_buf, "<CR>", function()
+  -- h: 折りたたむ
+  kmap(list_buf, "h", function()
     local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
-    local idx = cursor[1]
-    if idx > #M._commits then return end
-    local commit = M._commits[idx]
-    local files = M._selected_files
-    if #files == 0 then return end
+    local entry = M._list_map[cursor[1]]
+    if not entry then return end
 
-    if #files == 1 then
-      M._show_file_diff(commit, files[1].path)
-      return
+    if entry.type == "dir" then
+      local key = entry.commit_idx .. ":" .. entry.dir_path
+      if not M._collapsed[key] then
+        M._collapsed[key] = true
+        rerender_keeping_cursor()
+      end
+    elseif entry.type == "file" and entry.parent_dir then
+      local key = entry.commit_idx .. ":" .. entry.parent_dir
+      M._collapsed[key] = true
+      rerender_keeping_cursor()
+      for i, e in ipairs(M._list_map) do
+        if e.type == "dir" and e.commit_idx == entry.commit_idx and e.dir_path == entry.parent_dir then
+          pcall(vim.api.nvim_win_set_cursor, M._wins.list, { i, 0 })
+          break
+        end
+      end
     end
+  end)
 
-    local items = {}
-    for _, f in ipairs(files) do
-      table.insert(items, f.path)
+  -- l: トグル（展開/折りたたみ）
+  kmap(list_buf, "l", function()
+    local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
+    local entry = M._list_map[cursor[1]]
+    if not entry then return end
+
+    if entry.type == "dir" then
+      local key = entry.commit_idx .. ":" .. entry.dir_path
+      M._collapsed[key] = not M._collapsed[key] or nil
+      rerender_keeping_cursor()
     end
-    vim.ui.select(items, {
-      prompt = "Select file:",
+  end)
+
+  -- Enter: diff 表示
+  kmap(list_buf, "<CR>", function()
+    handle_cursor_move()
+  end)
+
+  -- c: cherry-pick
+  kmap(list_buf, "c", function()
+    local cursor = vim.api.nvim_win_get_cursor(M._wins.list)
+    local entry = M._list_map[cursor[1]]
+    if not entry then return end
+
+    -- ファイル行ならそのコミットを対象にする
+    local commit_idx = entry.type == "commit" and entry.idx or entry.commit_idx
+    if not commit_idx then return end
+    local commit = M._commits[commit_idx]
+
+    vim.ui.select({ "Yes", "No" }, {
+      prompt = "Cherry-pick " .. commit.short_hash .. " " .. commit.subject .. "?",
     }, function(choice)
-      if choice then
-        M._show_file_diff(commit, choice)
+      if choice == "Yes" then
+        vim.notify("shipgit: cherry-picking " .. commit.short_hash .. "...", vim.log.levels.INFO)
+        git.cherry_pick_async(commit.hash, function(out, code)
+          if code ~= 0 and git.is_cherry_picking() then
+            vim.notify("shipgit: cherry-pick コンフリクトが発生しました。ファイルを編集して解消してください", vim.log.levels.WARN)
+          elseif code ~= 0 then
+            vim.notify("shipgit: cherry-pick 失敗\n" .. (out or ""), vim.log.levels.ERROR)
+          else
+            vim.notify("shipgit: " .. commit.short_hash .. " を cherry-pick しました", vim.log.levels.INFO)
+          end
+          if M._on_close then M._on_close() end
+        end)
       end
     end)
   end)

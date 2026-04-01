@@ -54,6 +54,10 @@ function M.open(cwd)
 end
 
 function M.close()
+  if M._state then
+    local filelist = require("shipgit.filelist")
+    filelist.save_collapsed(M._state)
+  end
   local ui = require("shipgit.ui")
   ui.close()
   M._state = nil

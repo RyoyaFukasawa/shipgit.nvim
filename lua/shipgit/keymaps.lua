@@ -29,6 +29,8 @@ local function refresh(state)
       status_label = " [MERGING]"
     elseif git.is_rebasing() then
       status_label = " [REBASING]"
+    elseif git.is_cherry_picking() then
+      status_label = " [CHERRY-PICKING]"
     end
     vim.api.nvim_win_set_config(ui.wins.frame, {
       title = " shipgit - " .. branch .. status_label .. " ",
@@ -111,6 +113,26 @@ function M.attach_filelist(state)
       return
     end
     local input = require("shipgit.input")
+    -- merge/cherry-pick 中はデフォルトメッセージを設定
+    local default_msg = nil
+    local msg_file = nil
+    if git.is_merging() then
+      msg_file = git.cwd .. "/.git/MERGE_MSG"
+    elseif git.is_cherry_picking() then
+      msg_file = git.cwd .. "/.git/CHERRY_PICK_HEAD"
+      -- cherry-pick のメッセージは元コミットのメッセージを使う
+      local head_out = git.show_cherry_pick_msg()
+      if head_out then
+        default_msg = head_out
+      end
+    end
+    if not default_msg and msg_file then
+      local f = io.open(msg_file, "r")
+      if f then
+        default_msg = vim.trim(f:read("*l") or "")
+        f:close()
+      end
+    end
     input.open(function(msg)
       if msg and msg ~= "" then
         local _, code = git.commit(msg)
@@ -120,7 +142,7 @@ function M.attach_filelist(state)
         refresh(state)
       end
       ui.focus_filelist()
-    end)
+    end, default_msg)
   end)
 
   -- Push
@@ -180,19 +202,46 @@ function M.attach_filelist(state)
       return
     end
 
-    local entry = filelist.get_selected(state)
-    if not entry or not entry.file then
+    if git.is_cherry_picking() then
+      vim.ui.select({ "Abort cherry-pick", "Cancel" }, {
+        prompt = "Cherry-pick in progress",
+      }, function(choice)
+        if choice == "Abort cherry-pick" then
+          git.cherry_pick_abort()
+          vim.notify("shipgit: cherry-pick を中断しました", vim.log.levels.INFO)
+          refresh(state)
+          ui.focus_filelist()
+        end
+      end)
       return
     end
-    vim.ui.select({ "Yes", "No" }, {
-      prompt = "Discard changes to " .. entry.file.path .. "?",
-    }, function(choice)
-      if choice == "Yes" then
-        git.discard(entry.file.path)
-        refresh(state)
-        ui.focus_filelist()
-      end
-    end)
+
+    local entry = filelist.get_selected(state)
+    if not entry then
+      return
+    end
+    if entry.dir then
+      -- ディレクトリ: 配下の全変更を破棄
+      vim.ui.select({ "Yes", "No" }, {
+        prompt = "Discard all changes in " .. entry.dir .. "/?",
+      }, function(choice)
+        if choice == "Yes" then
+          git.discard_dir(entry.dir, state.files.unstaged)
+          refresh(state)
+          ui.focus_filelist()
+        end
+      end)
+    elseif entry.file then
+      vim.ui.select({ "Yes", "No" }, {
+        prompt = "Discard changes to " .. entry.file.path .. "?",
+      }, function(choice)
+        if choice == "Yes" then
+          git.discard(entry.file.path)
+          refresh(state)
+          ui.focus_filelist()
+        end
+      end)
+    end
   end)
 
   -- ファイルを開く
@@ -237,9 +286,14 @@ function M.attach_filelist(state)
 
   -- Stash
   map(buf, keys.stash, function()
+    ui._suspend_close = true
     local stash = require("shipgit.stash")
     stash.open(function()
+      ui._suspend_close = false
       refresh(state)
+      ui.focus_filelist()
+    end, function()
+      ui._suspend_close = false
       ui.focus_filelist()
     end)
   end)

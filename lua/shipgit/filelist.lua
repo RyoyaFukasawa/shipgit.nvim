@@ -2,10 +2,28 @@ local ui = require("shipgit.ui")
 
 local M = {}
 
---- 折りたたみ状態を初期化（state に _collapsed テーブルを持たせる）
+-- リポジトリごとの折りたたみ状態を永続保持
+M._saved_collapsed = {} -- cwd -> collapsed テーブル
+
+--- 折りたたみ状態を初期化（保存済みがあれば復元）
 local function ensure_collapsed(state)
   if not state._collapsed then
-    state._collapsed = {}
+    local git = require("shipgit.git")
+    local cwd = git.cwd or ""
+    if M._saved_collapsed[cwd] then
+      state._collapsed = M._saved_collapsed[cwd]
+    else
+      state._collapsed = {}
+    end
+  end
+end
+
+--- 折りたたみ状態を保存
+function M.save_collapsed(state)
+  if state._collapsed then
+    local git = require("shipgit.git")
+    local cwd = git.cwd or ""
+    M._saved_collapsed[cwd] = state._collapsed
   end
 end
 

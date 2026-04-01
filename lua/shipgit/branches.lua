@@ -98,8 +98,9 @@ function M._render()
       end
     end
     table.insert(lines, "")
-    table.insert(lines, " Space:checkout  M:merge  r:rebase  p:pull  P:push")
-    table.insert(lines, " n:new  d:delete  f:fetch  ]/[:tab  q:close")
+    table.insert(lines, " Space:checkout  M:merge  r:rebase  c:cherry-pick")
+    table.insert(lines, " p:pull  P:push  n:new  d:delete  f:fetch")
+    table.insert(lines, " ]/[:tab  q:close")
   else
     for _, b in ipairs(branches) do
       table.insert(lines, "  " .. b.name)
@@ -251,15 +252,26 @@ function M._setup_keymaps()
       vim.notify("shipgit: 現在のブランチはmergeできません", vim.log.levels.WARN)
       return
     end
+    local current = git.branch()
     M.close()
-    vim.notify("shipgit: merging " .. branch_name .. "...", vim.log.levels.INFO)
-    git.merge_async(branch_name, function(out, code)
-      if code ~= 0 then
-        vim.notify("shipgit: merge 失敗\n" .. (out or ""), vim.log.levels.ERROR)
-      else
-        vim.notify("shipgit: " .. branch_name .. " をmergeしました", vim.log.levels.INFO)
-      end
-      if on_done then on_done() end
+    vim.schedule(function()
+      vim.ui.select({ "Yes", "No" }, {
+        prompt = branch_name .. " → " .. current .. " にmergeしますか？",
+      }, function(choice)
+        if choice == "Yes" then
+          vim.notify("shipgit: merging " .. branch_name .. " → " .. current .. "...", vim.log.levels.INFO)
+          git.merge_async(branch_name, function(out, code)
+            if code ~= 0 and git.is_merging() then
+              vim.notify("shipgit: merge コンフリクトが発生しました。ファイルを編集して解消してください", vim.log.levels.WARN)
+            elseif code ~= 0 then
+              vim.notify("shipgit: merge 失敗\n" .. (out or ""), vim.log.levels.ERROR)
+            else
+              vim.notify("shipgit: " .. branch_name .. " を " .. current .. " にmergeしました", vim.log.levels.INFO)
+            end
+            if on_done then on_done() end
+          end)
+        end
+      end)
     end)
   end)
 
@@ -289,6 +301,20 @@ function M._setup_keymaps()
           end)
         end
       end)
+    end)
+  end)
+
+  -- c: cherry-pick（選択ブランチのログを表示）
+  kmap("c", function()
+    local b = get_selected(M)
+    if not b then return end
+    local branch_name = b.name
+    M.close()
+    vim.schedule(function()
+      local log = require("shipgit.log")
+      log.open(function()
+        if on_done then on_done() end
+      end, branch_name)
     end)
   end)
 

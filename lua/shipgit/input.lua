@@ -9,7 +9,8 @@ end
 
 --- コミットメッセージ入力ウィンドウを開く
 --- @param on_confirm fun(msg: string|nil) 確定時のコールバック
-function M.open(on_confirm)
+--- @param default_msg string|nil デフォルトメッセージ
+function M.open(on_confirm, default_msg)
   if M.is_open() then
     return
   end
@@ -65,8 +66,13 @@ function M.open(on_confirm)
     end
   end, { buffer = M._buf, nowait = true })
 
-  -- インサートモードで開始
-  vim.cmd("startinsert")
+  -- インサートモードで開始し、デフォルトメッセージがあれば入力
+  vim.cmd("startinsert!")
+  if default_msg and default_msg ~= "" then
+    vim.schedule(function()
+      vim.api.nvim_feedkeys(default_msg, "n", false)
+    end)
+  end
 end
 
 function M.close()
