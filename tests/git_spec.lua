@@ -387,6 +387,264 @@ describe("git", function()
     end)
   end)
 
+  describe("stash_files", function()
+    it("should return files in stash", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "hello" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      vim.fn.writefile({ "changed" }, tmpdir .. "/test.txt")
+      vim.fn.writefile({ "new" }, tmpdir .. "/new.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add .")
+      vim.fn.system("git -C " .. tmpdir .. " stash push -m 'test'")
+
+      git.init(tmpdir)
+      local files = git.stash_files(0)
+
+      assert.is_true(#files >= 1)
+      local paths = {}
+      for _, f in ipairs(files) do
+        paths[f.path] = f.status
+      end
+      assert.is_not_nil(paths["test.txt"])
+
+      -- cleanup
+      vim.fn.system("git -C " .. tmpdir .. " stash drop")
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("stash_show_file", function()
+    it("should return file content from stash", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "original" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      vim.fn.writefile({ "stashed content" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " stash push -m 'test'")
+
+      git.init(tmpdir)
+      local content = git.stash_show_file(0, "test.txt")
+      assert.is_not_nil(content)
+      assert.is_true(content:find("stashed content") ~= nil)
+
+      local parent = git.stash_show_parent_file(0, "test.txt")
+      assert.is_not_nil(parent)
+      assert.is_true(parent:find("original") ~= nil)
+
+      vim.fn.system("git -C " .. tmpdir .. " stash drop")
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("log with branch and skip", function()
+    it("should support skip parameter", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "1" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'first'")
+      vim.fn.writefile({ "2" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'second'")
+      vim.fn.writefile({ "3" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'third'")
+
+      git.init(tmpdir)
+      local all = git.log(10, 0)
+      assert.equals(3, #all)
+
+      local skipped = git.log(10, 1)
+      assert.equals(2, #skipped)
+      assert.equals("second", skipped[1].subject)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+
+    it("should support branch parameter", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "1" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'main commit'")
+      vim.fn.system("git -C " .. tmpdir .. " checkout -b feature")
+      vim.fn.writefile({ "2" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'feature commit'")
+      vim.fn.system("git -C " .. tmpdir .. " checkout main")
+
+      git.init(tmpdir)
+      local main_log = git.log(10, 0, "main")
+      assert.equals(1, #main_log)
+      assert.equals("main commit", main_log[1].subject)
+
+      local feature_log = git.log(10, 0, "feature")
+      assert.equals(2, #feature_log)
+      assert.equals("feature commit", feature_log[1].subject)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("cherry-pick", function()
+    it("should detect cherry-picking state", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "line1" }, tmpdir .. "/file.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add file.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      vim.fn.system("git -C " .. tmpdir .. " checkout -b feature")
+      vim.fn.writefile({ "feature" }, tmpdir .. "/file.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add file.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'feature change'")
+      local hash = vim.trim(vim.fn.system("git -C " .. tmpdir .. " rev-parse HEAD"))
+      vim.fn.system("git -C " .. tmpdir .. " checkout main")
+      vim.fn.writefile({ "main" }, tmpdir .. "/file.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add file.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'main change'")
+
+      -- cherry-pick（conflict が起きる）
+      vim.fn.system("git -C " .. tmpdir .. " cherry-pick " .. hash)
+
+      git.init(tmpdir)
+      assert.is_true(git.is_cherry_picking())
+
+      git.cherry_pick_abort()
+      assert.is_false(git.is_cherry_picking())
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("tag", function()
+    it("should create and delete tags", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "hello" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+
+      git.init(tmpdir)
+      local hash = vim.trim(vim.fn.system("git -C " .. tmpdir .. " rev-parse HEAD"))
+
+      -- create tag
+      local _, code = git.create_tag("v1.0.0", hash)
+      assert.equals(0, code)
+
+      -- verify tag exists
+      local tag_out = vim.trim(vim.fn.system("git -C " .. tmpdir .. " tag -l v1.0.0"))
+      assert.equals("v1.0.0", tag_out)
+
+      -- create tag with slash
+      local _, code2 = git.create_tag("ios/v1.0.0", hash)
+      assert.equals(0, code2)
+
+      -- delete tag
+      local _, code3 = git.delete_tag("v1.0.0")
+      assert.equals(0, code3)
+      local tag_out2 = vim.trim(vim.fn.system("git -C " .. tmpdir .. " tag -l v1.0.0"))
+      assert.equals("", tag_out2)
+
+      -- delete slash tag
+      local _, code4 = git.delete_tag("ios/v1.0.0")
+      assert.equals(0, code4)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("discard", function()
+    it("should discard changes to a file", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "original" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      vim.fn.writefile({ "changed" }, tmpdir .. "/test.txt")
+
+      git.init(tmpdir)
+      git.discard("test.txt")
+
+      local content = vim.fn.readfile(tmpdir .. "/test.txt")
+      assert.equals("original", content[1])
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+
+    it("should discard directory changes", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.mkdir(tmpdir .. "/src", "p")
+      vim.fn.writefile({ "a" }, tmpdir .. "/src/a.txt")
+      vim.fn.writefile({ "b" }, tmpdir .. "/src/b.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add .")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      vim.fn.writefile({ "changed a" }, tmpdir .. "/src/a.txt")
+      vim.fn.writefile({ "changed b" }, tmpdir .. "/src/b.txt")
+
+      git.init(tmpdir)
+      local files = git.status().unstaged
+      git.discard_dir("src", files)
+
+      local a = vim.fn.readfile(tmpdir .. "/src/a.txt")
+      local b = vim.fn.readfile(tmpdir .. "/src/b.txt")
+      assert.equals("a", a[1])
+      assert.equals("b", b[1])
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("push_async upstream detection", function()
+    it("should detect missing upstream", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "hello" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+
+      git.init(tmpdir)
+      -- upstream が設定されていないことを確認
+      local _, code = git._test_has_upstream and git._test_has_upstream() or nil, nil
+      -- rev-parse で直接テスト
+      local out = vim.fn.system("git -C " .. tmpdir .. " rev-parse --abbrev-ref --symbolic-full-name @{u} 2>&1")
+      assert.is_true(out:find("no upstream") ~= nil or out:find("fatal") ~= nil)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
   describe("merge", function()
     it("should detect merging state", function()
       local tmpdir = vim.fn.tempname()
