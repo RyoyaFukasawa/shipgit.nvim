@@ -122,4 +122,86 @@ describe("filelist", function()
       assert.is_true(#tree >= 1)
     end)
   end)
+
+  describe("get_file_icon", function()
+    it("should return string for any filename", function()
+      local icon, hl = filelist.get_file_icon("test.js")
+      assert.is_not_nil(icon)
+      assert.equals("string", type(icon))
+    end)
+
+    it("should return empty string without devicons", function()
+      -- devicons がない環境ではフォールバック
+      local icon = filelist.get_file_icon("unknown.xyz")
+      assert.equals("string", type(icon))
+    end)
+  end)
+
+  describe("get_dir_icon", function()
+    it("should return folder icon", function()
+      local icon = filelist.get_dir_icon()
+      assert.is_not_nil(icon)
+      assert.equals("string", type(icon))
+    end)
+  end)
+
+  describe("collapse and expand files for hunks", function()
+    it("should toggle file collapsed state", function()
+      local state = {
+        flat_files = {
+          { section = "unstaged", file = { path = "test.txt", status = "M" }, line = 0 },
+        },
+        cursor = 1,
+      }
+
+      -- 初期状態は nil（閉じ）、toggle で false（開き）になる
+      local changed = filelist.toggle_dir(state)
+      assert.is_true(changed)
+      assert.equals(false, state._collapsed["unstaged:file:test.txt"])
+
+      -- もう一度 toggle で true（閉じ）
+      changed = filelist.toggle_dir(state)
+      assert.is_true(changed)
+      assert.equals(true, state._collapsed["unstaged:file:test.txt"])
+    end)
+
+    it("should not toggle untracked files", function()
+      local state = {
+        flat_files = {
+          { section = "unstaged", file = { path = "new.txt", status = "?" }, line = 0 },
+        },
+        cursor = 1,
+      }
+
+      local changed = filelist.toggle_dir(state)
+      assert.is_false(changed)
+    end)
+  end)
+
+  describe("save and restore collapsed state", function()
+    it("should save and restore collapsed state per cwd", function()
+      -- git モジュールの cwd を設定
+      local git = require("shipgit.git")
+      local original_cwd = git.cwd
+      git.cwd = "/tmp/test-repo"
+
+      local state = { _collapsed = { ["unstaged:src"] = true } }
+      filelist.save_collapsed(state)
+
+      -- 新しい state で復元
+      local state2 = {}
+      -- ensure_collapsed は内部関数なので、toggle_dir 経由でテスト
+      state2.flat_files = {
+        { section = "unstaged", dir = "src", line = 0 },
+      }
+      state2.cursor = 1
+      filelist.toggle_dir(state2)
+      -- _collapsed が復元されているか
+      assert.is_not_nil(state2._collapsed)
+
+      -- cleanup
+      git.cwd = original_cwd
+      filelist._saved_collapsed["/tmp/test-repo"] = nil
+    end)
+  end)
 end)

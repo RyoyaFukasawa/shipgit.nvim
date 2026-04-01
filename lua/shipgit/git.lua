@@ -404,7 +404,7 @@ end
 --- ローカルブランチ一覧を返す（最近使った順にソート、ahead/behind付き）
 --- @return { name: string, current: boolean, ahead: number, behind: number }[]
 function M.branches()
-  local out, code = git("for-each-ref --sort=-committerdate --format='%(refname:short)|%(HEAD)|%(upstream:track)' refs/heads/")
+  local out, code = git("for-each-ref --sort=-committerdate --format='%(refname:short)|%(HEAD)|%(upstream:track)|%(upstream)' refs/heads/")
   if code ~= 0 then
     -- フォールバック
     out, code = git("branch --no-color --sort=-committerdate")
@@ -416,7 +416,7 @@ function M.branches()
       local current = line:sub(1, 2) == "* "
       local name = vim.trim(line:sub(3))
       if name ~= "" then
-        table.insert(branches, { name = name, current = current, ahead = 0, behind = 0 })
+        table.insert(branches, { name = name, current = current, ahead = 0, behind = 0, pushed = false })
       end
     end
     return branches
@@ -425,15 +425,17 @@ function M.branches()
   local branches = {}
   for line in out:gmatch("[^\n]+") do
     line = line:gsub("^'", ""):gsub("'$", "")
-    local name, head, track = line:match("^(.+)|(.*)|(.*)")
+    local name, head, track, upstream = line:match("^(.+)|(.*)|(.*)|(.*)$")
     if name and name ~= "" then
       local ahead = tonumber((track or ""):match("ahead (%d+)")) or 0
       local behind = tonumber((track or ""):match("behind (%d+)")) or 0
+      local has_upstream = upstream ~= nil and upstream ~= ""
       table.insert(branches, {
         name = name,
         current = head == "*",
         ahead = ahead,
         behind = behind,
+        pushed = has_upstream,
       })
     end
   end

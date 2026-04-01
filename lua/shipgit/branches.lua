@@ -85,7 +85,9 @@ function M._render()
     for i, b in ipairs(branches) do
       local prefix = b.current and "* " or "  "
       local status = ""
-      if b.ahead and b.ahead > 0 and b.behind and b.behind > 0 then
+      if not b.pushed then
+        status = " ⚠ unpushed"
+      elseif b.ahead and b.ahead > 0 and b.behind and b.behind > 0 then
         status = " ↑" .. b.ahead .. " ↓" .. b.behind
       elseif b.ahead and b.ahead > 0 then
         status = " ↑" .. b.ahead
@@ -131,6 +133,10 @@ function M._render()
       local line_text = lines[i]
       if b.current then
         vim.api.nvim_buf_add_highlight(M._buf, ns, "ShipgitStagedFile", i - 1, 0, -1)
+      end
+      local unpushed = line_text:find("⚠")
+      if unpushed then
+        vim.api.nvim_buf_add_highlight(M._buf, ns, "ShipgitConflictFile", i - 1, unpushed - 1, -1)
       end
       local arrow_up = line_text:find("↑")
       if arrow_up then

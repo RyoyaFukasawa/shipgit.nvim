@@ -645,6 +645,123 @@ describe("git", function()
     end)
   end)
 
+  describe("branches pushed flag", function()
+    it("should mark branches without upstream as unpushed", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "hello" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+
+      git.init(tmpdir)
+      local branches = git.branches()
+
+      assert.is_true(#branches >= 1)
+      -- ローカルのみのブランチは pushed = false
+      for _, b in ipairs(branches) do
+        assert.is_false(b.pushed)
+      end
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("diff_hunks", function()
+    it("should parse hunks from diff", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      -- 10行のファイルを作成
+      local original = {}
+      for i = 1, 10 do
+        original[i] = "line " .. i
+      end
+      vim.fn.writefile(original, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      -- 1行目と10行目を変更（離れているので2つのハンクになる）
+      local modified = vim.deepcopy(original)
+      modified[1] = "changed line 1"
+      modified[10] = "changed line 10"
+      vim.fn.writefile(modified, tmpdir .. "/test.txt")
+
+      git.init(tmpdir)
+      local hunks = git.diff_hunks("test.txt", false)
+
+      assert.is_true(#hunks >= 1)
+      assert.is_not_nil(hunks[1].header)
+      assert.is_not_nil(hunks[1].start_old)
+      assert.is_not_nil(hunks[1].start_new)
+      assert.is_not_nil(hunks[1].count_old)
+      assert.is_not_nil(hunks[1].count_new)
+      assert.is_not_nil(hunks[1].lines)
+      assert.is_not_nil(hunks[1].file_header)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+
+    it("should return empty for clean file", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "hello" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+
+      git.init(tmpdir)
+      local hunks = git.diff_hunks("test.txt", false)
+      assert.equals(0, #hunks)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
+  describe("hunk stage/unstage", function()
+    it("should stage a single hunk", function()
+      local tmpdir = vim.fn.tempname()
+      vim.fn.mkdir(tmpdir, "p")
+      vim.fn.system("git -C " .. tmpdir .. " init")
+      vim.fn.system("git -C " .. tmpdir .. " config user.email 'test@test.com'")
+      vim.fn.system("git -C " .. tmpdir .. " config user.name 'test'")
+      vim.fn.writefile({ "line1", "line2", "line3" }, tmpdir .. "/test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " add test.txt")
+      vim.fn.system("git -C " .. tmpdir .. " commit -m 'init'")
+      vim.fn.writefile({ "changed", "line2", "line3" }, tmpdir .. "/test.txt")
+
+      git.init(tmpdir)
+      local hunks = git.diff_hunks("test.txt", false)
+      assert.is_true(#hunks >= 1)
+
+      -- hunk をステージ
+      local _, code = git.stage_hunk(hunks[1])
+      assert.equals(0, code)
+
+      -- staged に変更がある
+      local status = git.status()
+      assert.equals(1, #status.staged)
+      assert.equals(0, #status.unstaged)
+
+      -- hunk をアンステージ
+      local staged_hunks = git.diff_hunks("test.txt", true)
+      assert.is_true(#staged_hunks >= 1)
+      local _, code2 = git.unstage_hunk(staged_hunks[1])
+      assert.equals(0, code2)
+
+      local status2 = git.status()
+      assert.equals(0, #status2.staged)
+      assert.equals(1, #status2.unstaged)
+
+      vim.fn.delete(tmpdir, "rf")
+    end)
+  end)
+
   describe("merge", function()
     it("should detect merging state", function()
       local tmpdir = vim.fn.tempname()

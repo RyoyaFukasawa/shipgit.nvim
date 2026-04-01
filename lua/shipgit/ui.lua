@@ -296,6 +296,15 @@ function M.resize()
 end
 
 function M.close()
+  -- サブウィンドウを先に閉じる
+  local sub_modules = { "shipgit.branches", "shipgit.stash", "shipgit.log", "shipgit.tree", "shipgit.projects", "shipgit.input" }
+  for _, mod_name in ipairs(sub_modules) do
+    local mod = package.loaded[mod_name]
+    if mod and mod.is_open and mod.is_open() and mod.close then
+      pcall(mod.close)
+    end
+  end
+
   -- autocmd 削除
   if M.autocmd_group then
     pcall(vim.api.nvim_del_augroup_by_id, M.autocmd_group)

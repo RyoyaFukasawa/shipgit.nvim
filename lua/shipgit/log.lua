@@ -149,8 +149,9 @@ local function render_tree_items(tree, lines, map, commit_idx, base_indent, coll
       if item.is_dir then
         local key = commit_idx .. ":" .. item.path
         local is_collapsed = collapsed[key]
-        local icon = is_collapsed and "▸" or "▾"
-        lines[#lines + 1] = base_indent .. item.indent .. icon .. " " .. item.name .. "/"
+        local arrow = is_collapsed and "▸" or "▾"
+        local dir_icon = filelist.get_dir_icon()
+        lines[#lines + 1] = base_indent .. item.indent .. arrow .. " " .. dir_icon .. " " .. item.name .. "/"
         map[#map + 1] = { type = "dir", commit_idx = commit_idx, dir_path = item.path }
 
         if is_collapsed then
@@ -159,8 +160,9 @@ local function render_tree_items(tree, lines, map, commit_idx, base_indent, coll
           collapsed_dirs[item.path] = nil
         end
       else
-        local icon = filelist.status_icon(item.file.status)
-        lines[#lines + 1] = base_indent .. item.indent .. icon .. " " .. item.name
+        local status_char = filelist.status_icon(item.file.status)
+        local file_icon = filelist.get_file_icon(item.name)
+        lines[#lines + 1] = base_indent .. item.indent .. status_char .. " " .. file_icon .. " " .. item.name
         map[#map + 1] = { type = "file", filepath = item.file.path, status = item.file.status, commit_idx = commit_idx, parent_dir = item.parent_dir }
       end
     end

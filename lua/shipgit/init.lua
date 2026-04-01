@@ -58,7 +58,7 @@ function M.open(cwd)
   vim.api.nvim_create_autocmd("FocusGained", {
     group = M._augroup,
     callback = function()
-      if M._state then
+      if M._state and ui.wins.frame and vim.api.nvim_win_is_valid(ui.wins.frame) then
         local s = M._state
         s.files = git.status()
         local total = #(s.flat_files or {})

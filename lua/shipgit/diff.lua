@@ -67,6 +67,9 @@ function M.show_file(state)
 
   -- 右パネル（new）を編集可能にする（unstaged のみ、ワーキングツリーを直接編集）
   state._current_filepath = filepath
+  if not ui.bufs.diff_right or not vim.api.nvim_buf_is_valid(ui.bufs.diff_right) then
+    return
+  end
   pcall(vim.api.nvim_buf_set_name, ui.bufs.diff_right, "")
   if entry.section == "unstaged" and entry.file.status ~= "D" then
     pcall(vim.api.nvim_buf_set_name, ui.bufs.diff_right, "shipgit://" .. filepath)
@@ -94,6 +97,14 @@ function M.show_file(state)
   vim.wo[ui.wins.diff_right].scrollbind = true
   vim.wo[ui.wins.diff_left].cursorbind = true
   vim.wo[ui.wins.diff_right].cursorbind = true
+
+  -- ハンク行が選択されている場合、そのハンク位置にスクロール
+  if entry.hunk then
+    local scroll_line = entry.hunk.start_new
+    if ui.wins.diff_right and vim.api.nvim_win_is_valid(ui.wins.diff_right) then
+      pcall(vim.api.nvim_win_set_cursor, ui.wins.diff_right, { math.max(scroll_line, 1), 0 })
+    end
+  end
 
   -- ファイル一覧にフォーカスを戻す
   if state.active_panel == "filelist" then
@@ -162,49 +173,56 @@ function M.stage_hunk_at_cursor(state)
     return
   end
 
-  -- バッファの行数が少ない場合、1つしかハンクがない
-  if #hunks == 1 then
-    local hunk = hunks[1]
-    local out, code
-    if is_staged then
-      out, code = git.unstage_hunk(hunk)
-    else
-      out, code = git.stage_hunk(hunk)
+  -- カーソル行がNeovimのdiffハイライト上にあるか確認
+  local is_on_diff = vim.diff and true or true -- diffthis が有効な前提
+  local hl_id = vim.fn.diff_hlID(cursor_line, 1)
+  if hl_id == 0 then
+    -- filler行（相手側に行がない）かチェック
+    local filler = vim.fn.diff_filler(cursor_line)
+    if filler == 0 then
+      vim.notify("shipgit: カーソルがハンク上にありません", vim.log.levels.WARN)
+      return
     end
-    if code ~= 0 then
-      vim.notify("shipgit: ハンクのstage失敗\n" .. (out or ""), vim.log.levels.ERROR)
-    end
-    return
   end
 
-  -- 複数ハンクの場合、カーソル行からハンクを特定
-  -- 右パネルの行番号をnew側の行番号として使う
-  local target_hunk = hunks[#hunks] -- デフォルトは最後のハンク
+  -- カーソル行からgitハンクを特定
+  -- Neovimのdiffとgitのdiffで行番号がずれうるため、最も近いハンクを選ぶ
+  local target_hunk = nil
+  local min_dist = math.huge
   if cur_win == ui.wins.diff_right then
-    for i, hunk in ipairs(hunks) do
-      local hunk_end = hunk.start_new + hunk.count_new - 1
-      if cursor_line >= hunk.start_new and cursor_line <= hunk_end then
+    for _, hunk in ipairs(hunks) do
+      local hunk_start = hunk.start_new
+      local hunk_end = hunk.start_new + math.max(hunk.count_new, 1) - 1
+      if cursor_line >= hunk_start and cursor_line <= hunk_end then
         target_hunk = hunk
         break
       end
-      -- カーソルがハンクとハンクの間にある場合、直前のハンク
-      if i < #hunks and cursor_line > hunk_end and cursor_line < hunks[i + 1].start_new then
+      -- 最も近いハンクを記録
+      local dist = math.min(math.abs(cursor_line - hunk_start), math.abs(cursor_line - hunk_end))
+      if dist < min_dist then
+        min_dist = dist
         target_hunk = hunk
-        break
       end
     end
   elseif cur_win == ui.wins.diff_left then
-    for i, hunk in ipairs(hunks) do
-      local hunk_end = hunk.start_old + hunk.count_old - 1
-      if cursor_line >= hunk.start_old and cursor_line <= hunk_end then
+    for _, hunk in ipairs(hunks) do
+      local hunk_start = hunk.start_old
+      local hunk_end = hunk.start_old + math.max(hunk.count_old, 1) - 1
+      if cursor_line >= hunk_start and cursor_line <= hunk_end then
         target_hunk = hunk
         break
       end
-      if i < #hunks and cursor_line > hunk_end and cursor_line < hunks[i + 1].start_old then
+      local dist = math.min(math.abs(cursor_line - hunk_start), math.abs(cursor_line - hunk_end))
+      if dist < min_dist then
+        min_dist = dist
         target_hunk = hunk
-        break
       end
     end
+  end
+
+  if not target_hunk then
+    vim.notify("shipgit: カーソルがハンク上にありません", vim.log.levels.WARN)
+    return
   end
 
   local out, code

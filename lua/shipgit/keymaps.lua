@@ -77,13 +77,24 @@ function M.attach_filelist(state)
     end
   end)
 
-  -- Stage/Unstage トグル（ファイル or ディレクトリ or conflict resolved）
+  -- Stage/Unstage トグル（ファイル or ディレクトリ or ハンク or conflict resolved）
   map(buf, keys.stage_toggle, function()
     local entry = filelist.get_selected(state)
     if not entry then
       return
     end
-    if entry.section == "conflict" then
+    if entry.hunk then
+      -- ハンク単位のstage/unstage
+      local out, code
+      if entry.section == "staged" then
+        out, code = git.unstage_hunk(entry.hunk)
+      else
+        out, code = git.stage_hunk(entry.hunk)
+      end
+      if code ~= 0 then
+        vim.notify("shipgit: ハンクのstage失敗\n" .. (out or ""), vim.log.levels.ERROR)
+      end
+    elseif entry.section == "conflict" then
       git.mark_resolved(entry.file.path)
     elseif entry.section == "unstaged" then
       local path = entry.dir or entry.file.path
@@ -334,17 +345,21 @@ end
 function M.attach_diff(state)
   local keys = config.values.keymaps
 
-  -- diff パネル共通のハンクstage
-  local function hunk_stage_action()
-    diff.stage_hunk_at_cursor(state)
-    vim.schedule(function()
-      refresh(state)
-    end)
+  -- diff パネルではファイル全体をstage/unstage
+  local function file_stage_action()
+    local entry = filelist.get_selected(state)
+    if not entry or not entry.file then return end
+    if entry.section == "unstaged" then
+      git.stage(entry.file.path)
+    else
+      git.unstage(entry.file.path)
+    end
+    refresh(state)
   end
 
   -- diff_left (old, 読み取り専用)
   local buf_left = ui.bufs.diff_left
-  map(buf_left, keys.stage_toggle, hunk_stage_action)
+  map(buf_left, keys.stage_toggle, file_stage_action)
   map(buf_left, keys.focus_next, function()
     state.active_panel = "filelist"
     ui.focus_filelist()
@@ -366,7 +381,7 @@ function M.attach_diff(state)
 
   -- diff_right (new, 編集可能)
   local buf_right = ui.bufs.diff_right
-  map(buf_right, keys.stage_toggle, hunk_stage_action)
+  map(buf_right, keys.stage_toggle, file_stage_action)
   map(buf_right, keys.focus_next, function()
     state.active_panel = "filelist"
     ui.focus_filelist()

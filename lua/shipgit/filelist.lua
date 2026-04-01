@@ -2,6 +2,31 @@ local ui = require("shipgit.ui")
 
 local M = {}
 
+-- nvim-web-devicons の遅延ロード
+local _devicons = nil
+local function get_devicons()
+  if _devicons == nil then
+    local ok, icons = pcall(require, "nvim-web-devicons")
+    _devicons = ok and icons or false
+  end
+  return _devicons or nil
+end
+
+--- ファイル名からアイコンとハイライトグループを取得
+function M.get_file_icon(filename)
+  local devicons = get_devicons()
+  if devicons then
+    local icon, hl = devicons.get_icon(filename, nil, { default = true })
+    return icon or "", hl
+  end
+  return "", nil
+end
+
+--- ディレクトリアイコン
+function M.get_dir_icon()
+  return "", nil
+end
+
 -- リポジトリごとの折りたたみ状態を永続保持
 M._saved_collapsed = {} -- cwd -> collapsed テーブル
 
@@ -27,16 +52,29 @@ function M.save_collapsed(state)
   end
 end
 
---- ディレクトリの折りたたみをトグル
+--- ディレクトリまたはファイル（ハンク展開）の折りたたみをトグル
 function M.toggle_dir(state)
   local entry = M.get_selected(state)
-  if not entry or not entry.dir then
+  if not entry then
     return false
   end
   ensure_collapsed(state)
-  local key = entry.section .. ":" .. entry.dir
-  state._collapsed[key] = not state._collapsed[key]
-  return true
+  if entry.dir then
+    local key = entry.section .. ":" .. entry.dir
+    state._collapsed[key] = not state._collapsed[key]
+    return true
+  end
+  if entry.file and entry.file.status ~= "?" then
+    local key = entry.section .. ":file:" .. entry.file.path
+    -- nil(初期=閉じ) → false(開く), false(開き) → true(閉じ)
+    if state._collapsed[key] == false then
+      state._collapsed[key] = true
+    else
+      state._collapsed[key] = false
+    end
+    return true
+  end
+  return false
 end
 
 --- ディレクトリを閉じる（カーソルがファイルの場合は親ディレクトリを閉じる）
@@ -57,18 +95,37 @@ function M.collapse(state)
     return false
   end
 
-  -- ファイル行：親ディレクトリを探して閉じ、カーソルをそこに移動
-  if entry.file and entry._parent_dir then
-    local key = entry.section .. ":" .. entry._parent_dir
+  -- ハンク行：親ファイルを閉じてカーソルをファイル行に移動
+  if entry.hunk and entry._parent_file then
+    local key = entry.section .. ":file:" .. entry._parent_file
     state._collapsed[key] = true
-    -- カーソルを親ディレクトリに移動
     for i, e in ipairs(state.flat_files) do
-      if e.dir == entry._parent_dir and e.section == entry.section then
+      if e.file and e.file.path == entry._parent_file and e.section == entry.section then
         state.cursor = i
         break
       end
     end
     return true
+  end
+
+  -- ファイル行：ハンクが展開されていれば閉じる、なければ親ディレクトリを閉じる
+  if entry.file then
+    local file_key = entry.section .. ":file:" .. entry.file.path
+    if state._collapsed[file_key] == false then
+      state._collapsed[file_key] = true
+      return true
+    end
+    if entry._parent_dir then
+      local key = entry.section .. ":" .. entry._parent_dir
+      state._collapsed[key] = true
+      for i, e in ipairs(state.flat_files) do
+        if e.dir == entry._parent_dir and e.section == entry.section then
+          state.cursor = i
+          break
+        end
+      end
+      return true
+    end
   end
 
   return false
@@ -161,7 +218,7 @@ function M.render(state)
   local ns = vim.api.nvim_create_namespace("shipgit_filelist")
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   for _, hl in ipairs(highlights) do
-    vim.api.nvim_buf_add_highlight(buf, ns, hl[2], hl[1], 0, -1)
+    vim.api.nvim_buf_add_highlight(buf, ns, hl[2], hl[1], hl[3] or 0, hl[4] or -1)
   end
 
   -- カーソル位置を復元
@@ -191,8 +248,9 @@ function M._render_section(state, section, files, lines, highlights, line_idx, f
     elseif item.is_dir then
       local key = section .. ":" .. item.path
       local collapsed = state._collapsed[key]
-      local icon = collapsed and "▸" or "▾"
-      table.insert(lines, "  " .. item.indent .. icon .. " " .. item.name .. "/")
+      local arrow = collapsed and "▸" or "▾"
+      local dir_icon = M.get_dir_icon()
+      table.insert(lines, "  " .. item.indent .. arrow .. " " .. dir_icon .. " " .. item.name .. "/")
       table.insert(highlights, { line_idx, "ShipgitDirName" })
       table.insert(state.flat_files, { section = section, dir = item.path, line = line_idx })
       line_idx = line_idx + 1
@@ -203,15 +261,55 @@ function M._render_section(state, section, files, lines, highlights, line_idx, f
         collapsed_dirs[item.path] = nil
       end
     else
-      local icon_char = M.status_icon(item.file.status)
+      local status_char = M.status_icon(item.file.status)
       local hl = file_hl
       if untracked_hl and item.file.status == "?" then
         hl = untracked_hl
       end
-      table.insert(lines, "  " .. item.indent .. icon_char .. " " .. item.name)
+      -- ファイルアイコン
+      local file_icon, icon_hl = M.get_file_icon(item.name)
+      -- ハンク展開状態を確認
+      local file_key = section .. ":file:" .. item.file.path
+      local file_expanded = state._collapsed[file_key] == false
+      local has_hunks = item.file.status ~= "?" and item.file.status ~= "A" and item.file.status ~= "D"
+      local prefix = ""
+      if has_hunks and file_expanded then
+        prefix = "▾ "
+      elseif has_hunks then
+        prefix = "▸ "
+      end
+      local line_text = "  " .. item.indent .. prefix .. status_char .. " " .. file_icon .. " " .. item.name
+      table.insert(lines, line_text)
       table.insert(highlights, { line_idx, hl })
+      -- アイコンにdeviconsのハイライトを適用
+      if icon_hl then
+        local icon_start = #("  " .. item.indent .. prefix .. status_char .. " ")
+        local icon_end = icon_start + #file_icon
+        table.insert(highlights, { line_idx, icon_hl, icon_start, icon_end })
+      end
       table.insert(state.flat_files, { section = section, file = item.file, line = line_idx, _parent_dir = item.parent_dir })
       line_idx = line_idx + 1
+
+      -- ハンク展開中ならハンク一覧を表示
+      if has_hunks and file_expanded then
+        local git = require("shipgit.git")
+        local hunks = git.diff_hunks(item.file.path, section == "staged")
+        for hi, hunk in ipairs(hunks) do
+          local hunk_label = "  " .. item.indent .. "    @@ " .. hi .. "/" .. #hunks
+            .. " (+" .. hunk.count_new .. " -" .. hunk.count_old .. ")"
+          table.insert(lines, hunk_label)
+          table.insert(highlights, { line_idx, "ShipgitHelpKey" })
+          table.insert(state.flat_files, {
+            section = section,
+            hunk = hunk,
+            file = item.file,
+            line = line_idx,
+            _parent_file = item.file.path,
+            _hunk_index = hi,
+          })
+          line_idx = line_idx + 1
+        end
+      end
     end
   end
 
